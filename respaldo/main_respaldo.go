@@ -18,12 +18,12 @@ type BackupUser struct {
 }
 
 var (
-	replicatedUsers []BackupUser
-	backupMutex     sync.Mutex
+	replicatedUsers []BackupUser // Lista de usuarios replicados
+	backupMutex     sync.Mutex   // Mutex para acceso concurrente
 )
 
 func main() {
-	go periodicSync() // Inicia la sincronización periódica
+	go periodicSync() // Inicia la sincronización periódica con el servidor principal
 
 	r := gin.Default() // Inicializa el router Gin
 
@@ -38,6 +38,8 @@ func main() {
 func periodicSync() {
 	for {
 		fmt.Println("Sincronizando con el servidor principal...")
+
+		// Obtener la lista de usuarios del servidor principal
 		resp, err := http.Get("http://localhost:8080/users")
 		if err != nil {
 			fmt.Println("Error al conectar con el servidor principal:", err)
@@ -55,23 +57,56 @@ func periodicSync() {
 		}
 
 		backupMutex.Lock()
-		// Identificar y replicar únicamente los nuevos usuarios
-		for _, principalUser := range principalUsers {
-			found := false
-			for _, replicaUser := range replicatedUsers {
-				if principalUser.ID == replicaUser.ID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				replicatedUsers = append(replicatedUsers, principalUser)
-				fmt.Printf("Usuario replicado: %v\n", principalUser)
-			}
-		}
+		// Actualizamos o eliminamos usuarios según los cambios detectados
+		updateAndRemoveUsers(principalUsers)
 		backupMutex.Unlock()
 
-		time.Sleep(10 * time.Second)
+		time.Sleep(10 * time.Second) // Intervalo entre sincronizaciones
+	}
+}
+
+// Actualizar y eliminar usuarios en el servidor de respaldo
+func updateAndRemoveUsers(principalUsers []BackupUser) {
+	// Mapa para detectar usuarios que ya existen en el principal
+	principalMap := make(map[int]BackupUser)
+	for _, user := range principalUsers {
+		principalMap[user.ID] = user
+	}
+
+	// Actualizar usuarios existentes o marcarlos como "presentes"
+	presentUsers := make(map[int]bool)
+	for i, replicaUser := range replicatedUsers {
+		if principalUser, exists := principalMap[replicaUser.ID]; exists {
+			// Si el usuario existe, verificar si necesita ser actualizado
+			if replicaUser.Name != principalUser.Name || replicaUser.Username != principalUser.Username {
+				fmt.Printf("Actualizando usuario: %v\n", principalUser)
+				replicatedUsers[i] = principalUser // Actualiza el usuario
+			}
+			presentUsers[replicaUser.ID] = true
+		}
+	}
+
+	// Eliminar usuarios que ya no están en el servidor principal
+	for i := len(replicatedUsers) - 1; i >= 0; i-- {
+		if !presentUsers[replicatedUsers[i].ID] {
+			fmt.Printf("Eliminando usuario: %v\n", replicatedUsers[i])
+			replicatedUsers = append(replicatedUsers[:i], replicatedUsers[i+1:]...)
+		}
+	}
+
+	// Agregar nuevos usuarios desde el servidor principal
+	for _, principalUser := range principalUsers {
+		found := false
+		for _, replicaUser := range replicatedUsers {
+			if principalUser.ID == replicaUser.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("Agregando nuevo usuario: %v\n", principalUser)
+			replicatedUsers = append(replicatedUsers, principalUser)
+		}
 	}
 }
 
